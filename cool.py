@@ -2,7 +2,75 @@ import numpy as np
 import cv2 as cv
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import math
 
+class Point(object):
+    def __init__(self,xParam = 0.0,yParam = 0.0):
+        self.x = xParam
+        self.y = yParam
+ 
+    def __str__(self):
+        return "(%.2f, %.2f)"% (self.x ,self.y)
+ 
+    def distance(self, pt):
+        xDiff = self.x - pt.x
+        yDiff = self.y - pt.y
+        return math.sqrt(xDiff ** 2 + yDiff ** 2)
+
+    def slopee(self, pt):
+        xDiff = self.x - pt.x
+        yDiff = self.y - pt.y
+        if abs(xDiff) >= 0.9:
+            return yDiff / xDiff
+        else:
+            print("该线段垂直于y轴")
+            
+class Regulation:
+    def __init__(self, edge_points: list[Point]):
+        if len(edge_points) < 10 and len(edge_points) > 2:
+            self.edge_points = edge_points
+            self.angle = 0
+        if len(edge_points) == 2:
+            print("提供的点数太少,将该两点视为矩形角点。")
+            rect = []
+            rect.append(edge_points[0])
+            rect.append(Point(edge_points[0].x, edge_points[1].y))
+            rect.append(edge_points[1])
+            rect.append(Point(edge_points[1].x, edge_points[0].y))
+            self.edge_points = edge_points
+            
+        if len(edge_points) > 10:
+            print("测区形状过于复杂,将使用DP法进行轮廓简化,请您最好重新规划路线。")
+            #self.edge_points = cv.approxPolyDP(edge_points, 50, True)
+    
+    def get_angle(self):
+        max_distance = 0
+        start_point_index = 0
+        for i in range(len(self.edge_points) - 1):
+            if self.edge_points[i].distance(self.edge_points[i + 1]) > max_distance:
+                max_distance = self.edge_points[i].distance(self.edge_points[i + 1])
+                start_point_index = i
+        if  self.edge_points[0].distance(self.edge_points[-1]) > max_distance:
+            max_distance = self.edge_points[0].distance(self.edge_points[-1])
+            start_point_index = len(self.edge_points) - 1
+        self.edge_points = self.edge_points[start_point_index : ] + self.edge_points[ : start_point_index]
+        self.angle = self.edge_points[0].slopee(self.edge_points[1])
+       
+    def turn_Polygen(self):
+        new_edge_points = []
+        h = math.atan(self.angle)#斜率转角度
+        origin_x = self.edge_points[0].x
+        origin_y = self.edge_points[0].y
+        for point in self.edge_points:
+            point.x = point.x - origin_x
+            point.y = point.y - origin_y
+            new_x = round(point.x * math.cos(h) + point.y * math.sin(h))
+            new_y = round(-point.x * math.sin(h) + point.y * math.cos(h))
+            point.x = new_x
+            point.y = abs(new_y)
+            new_edge_points.append(point)  
+        self.edge_points = new_edge_points
+        
 class Trajectory:
     def __init__(self, scale = 1/2000, length_EW = 5e4, length_NS = 3e4, 
                  height_min = 20, height_max = 200, GSD = 0.2, f = 5.02e-2, 
@@ -63,7 +131,7 @@ class Trajectory:
         print("航线间距为:" + str(self.By))
         print("摄影基线长度为:"  + str(self.Bx))
         
-    def calculate_num_pics(self):
+    def calculate_num_pics_rect(self):
         if self.direction == "EW":
             self.num_along = round(self.length_EW / self.Bx) + 1 + 2
             self.num_beside = round(self.length_NS / self.By) + 1
@@ -78,6 +146,78 @@ class Trajectory:
         print("航线数:" + str(self.num_beside))
         print("相片总数为:" + str(self.num_total))
     
+    def calculate_num_pics_polygen(self, edge_points : list[Point]):
+        num_points = len(edge_points)
+        x = []
+        y = []
+        for point in edge_points:
+            x.append(point.x)
+            y.append(point.y)
+        max_x = max(x)
+        min_x = min(x)
+        max_y = max(y)
+        min_y = min(y)
+        index = y.index(max_y)
+        true_x = []
+        true_y = []
+        width = max_x - min_x
+        height = max_y - min_y   
+        self.num_along = round(width / self.Bx) + 1 + 2
+        self.num_beside = round(height / self.By) + 1
+        
+        true_x.append(-self.Bx)
+        true_y.append(0)
+        for i in range(self.num_along):
+                tem_x = int(min_x + i * self.Bx)
+                if tem_x >= 0 and tem_x <= edge_points[1].x:
+                    true_x.append(tem_x)
+                    true_y.append(0)
+                    if tem_x + self.Bx > edge_points[1].x:
+                        true_x.append(tem_x + self.Bx)
+                        true_y.append(0)
+                        
+        for j in range(1, self.num_beside):
+            tem_y = int(min_y + j * self.By)
+            intersect_x = 0
+            intersect_x_2 = []
+            for k in range(1, num_points):
+                up = max([edge_points[k].y, edge_points[(k + 1) % num_points].y])
+                down = min([edge_points[k].y, edge_points[(k + 1) % num_points].y])
+                if tem_y >= down and tem_y <= up:
+                    if edge_points[k].x != edge_points[(k + 1) % num_points].x:
+                        a = (edge_points[(k+1)%num_points].y - edge_points[k].y) / (edge_points[(k+1)%num_points].x - edge_points[k].x)
+                        b = edge_points[k].y - a * edge_points[k].x
+                        intersect_x = int((tem_y - b) / a)
+                    else:
+                        intersect_x = edge_points[k].x
+                    intersect_x_2.append(intersect_x)
+            intersect_x_2.sort()
+            
+            line_x = []
+            line_y = []  
+            for i in range(self.num_along):
+                tem_x = int(min_x + i * self.Bx)
+                
+                if tem_x >= intersect_x_2[0] and tem_x <= intersect_x_2[1]:
+                    if tem_x - self.Bx < intersect_x_2[0]:
+                        line_x.append(tem_x - self.Bx)
+                        line_y.append(tem_y)
+                    line_x.append(tem_x)
+                    line_y.append(tem_y)
+                    if tem_x + self.Bx > intersect_x_2[1]:
+                        line_x.append(tem_x + self.Bx)
+                        line_y.append(tem_y)
+            if j%2 == 1:
+                line_x = sorted(line_x, reverse=True)
+            true_x = true_x + line_x
+            true_y = true_y + line_y
+        true_x.append(edge_points[index].x)
+        true_y.append(true_y[-1] + self.By)
+        print("Warning!这里计算的是多边形航迹规划,每条航向数不同")
+        print("航线数:" + str(self.num_beside))
+        print("相片总数为:" + str(len(true_x)))
+        return true_x, true_y
+        
     def calculate_exposure(self):
         height_mean = (self.height_min + self.height_max) / 2
         self.exposure = self.shift_bias * self.size_pix * (self.H - height_mean) / (self.speed_plane * self.f)
